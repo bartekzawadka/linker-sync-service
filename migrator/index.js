@@ -13,17 +13,15 @@ var async = require('async');
 var running = false;
 
 mongoose.connection.on('error', function (err) {
-    console.log("MongoDB Connection Error. Please make sure that MongoDB is running.");
     winston.log('error', 'MongoDB Connection Error. Please make sure that MongoDB is running.');
     winston.log('error', err);
     running = false;
 });
 mongoose.connection.on('open', function () {
-    console.log("Connected to mongo server");
     winston.log('info', 'Connected to mongo server.');
     winston.log('info', 'Starting synchronization');
 
-    migrate();
+    sync();
 });
 
 module.exports.run = function () {
@@ -33,19 +31,17 @@ module.exports.run = function () {
 var migrationTask = function () {
 
     if (running) {
-        console.log('Operation running! Need to wait...');
+        winston.log('info', 'Synchronization job invoked, but another task is running. Waiting for next CRON opportunity');
         return;
     }
 
     running = true;
-    console.log('No job at the moment. Taking token.');
+    winston.log('info', 'Synchronization job started');
 
     destModels.sequelize.sync().then(function () {
         winston.log('info', 'Destination database synced successfully');
 
-        console.log('State: ' + mongoose.connection.readyState);
-
-        if(mongoose.connection.readyState == 0) {
+        if (mongoose.connection.readyState == 0) {
 
             mongoose.connect('mongodb://' +
                 config.source.username + ':'
@@ -56,99 +52,153 @@ var migrationTask = function () {
     });
 };
 
-var migrate = function(){
+var markDeletedItems = function (callback) {
+    winston.log('info', 'Marking removed items started');
 
     destModels.issue.findAll({
-        order: "\"updatedAt\" DESC",
-        attributes: ['updatedAt'],
-        limit: 1
-    }).then(function (result) {
-        var where = null;
-
-        if (result && result[0] && result[0].dataValues && result[0].dataValues.updatedAt) {
-            var date = new Date(result[0].dataValues.updatedAt);
-            where = {
-                "updateAt": {
-                    $gt: date
-                }
-            };
+        attributes: ['sourceId'],
+        where:{
+            "inactive": false
         }
-        sourceIssue.find().where(where).sort({"updateAt": 1}).exec(function (error, res) {
-            if (error) {
-                winston.log('error', 'Error occured requesting data to synchronize: ' + os.EOL + error);
-                mongoose.connection.close();
-                running = false;
-                return;
-            }
+    }).then(function (result) {
+        async.each(result, function (item, localCallback) {
+            sourceIssue.findById(item.sourceId, function (err, issue) {
+                if (err)
+                    localCallback(err);
 
-            async.each(res, function (item, callback) {
-                destModels.issue.findAll({where: {"sourceId": item.id}}).then(function (r) {
-                    if (!r || r.length == 0) {
-                        destModels.issue.create({
-                            title: item.title,
-                            description: item.description,
-                            solveDate: item.solveDate,
-                            sourceId: item.id
-                        }).then(function (record) {
-                            async.each(item.links, function (linkItem, localCallback) {
-                                destModels.link.create({
-                                    link: linkItem,
-                                    issueId: record.id
-                                }).then(function (e) {
-                                    localCallback();
-                                }).catch(function (e) {
-                                    localCallback(e);
-                                })
-                            }, function (error) {
-                                if (error) {
-                                    console.log(error);
-                                    callback(error);
-                                }
-                                callback();
-                            });
-                        });
-                    } else if (r.length > 1) {
-                        callback();
-                    } else if (r.length == 1) {
-                        destModels.link.destroy({where: {"\"issueId\"": r[0].id}}).then(function (e) {
-                            destModels.issue.upsert({
-                                title: item.title,
-                                description: item.description,
-                                solveDate: item.solveDate,
-                                sourceId: item.id,
-                                id: r[0].id
-                            }).then(function (e) {
-                                async.each(item.links, function (linkItem, localCallback) {
-                                    destModels.link.create({
-                                        link: linkItem,
-                                        issueId: r[0].id
-                                    }).then(function (e) {
-                                        localCallback();
-                                    }).catch(function (e) {
-                                        localCallback(e);
-                                    });
-                                }, function (error) {
-                                    if (error)
-                                        callback(error);
-                                    callback();
-                                });
-                            });
-                        });
+                if (!issue) {
+                    destModels.issue.update({
+                            "inactive": true
+                        }, {
+                            where: {
+                                "sourceId": item.sourceId
+                            }
+                        }).then(function () {
+                        localCallback();
+                    }).catch(function (e) {
+                        localCallback(e);
+                    });
+                }else{
+                    localCallback();
+                }
+            });
+        }, function (error) {
+            callback(error);
+        });
+    }).catch(function(e){
+        callback(e);
+    });
+};
+
+var sync = function () {
+
+    markDeletedItems(function(er){
+        if(er){
+            if (error) {
+                winston.log('error', 'Marking removed items failed: ' + os.EOL + er);
+            }
+            mongoose.connection.close();
+            running = false;
+        }else{
+            winston.log('info', 'Marking removed items completed');
+            winston.log('info', 'Data synchronization started');
+
+            destModels.issue.findAll({
+                order: "\"updatedAt\" DESC",
+                attributes: ['updatedAt'],
+                limit: 1
+            }).then(function (result) {
+                var where = null;
+
+                if (result && result[0] && result[0].dataValues && result[0].dataValues.updatedAt) {
+                    var date = new Date(result[0].dataValues.updatedAt);
+                    where = {
+                        "updateAt": {
+                            $gt: date
+                        }
+                    };
+                }
+                sourceIssue.find().where(where).sort({"updateAt": 1}).exec(function (error, res) {
+                    if (error) {
+                        winston.log('error', 'Error occured requesting data to synchronize: ' + os.EOL + error);
+                        mongoose.connection.close();
+                        running = false;
+                        return;
                     }
+
+                    async.each(res, function (item, callback) {
+                        destModels.issue.findAll({where: {"sourceId": item.id}}).then(function (r) {
+                            if (!r || r.length == 0) {
+                                destModels.issue.create({
+                                    title: item.title,
+                                    description: item.description,
+                                    solveDate: item.solveDate,
+                                    sourceId: item.id
+                                }).then(function (record) {
+                                    async.each(item.links, function (linkItem, localCallback) {
+                                        destModels.link.create({
+                                            link: linkItem,
+                                            issueId: record.id
+                                        }).then(function (e) {
+                                            localCallback();
+                                        }).catch(function (e) {
+                                            localCallback(e);
+                                        })
+                                    }, function (error) {
+                                        if (error) {
+                                            console.log(error);
+                                            callback(error);
+                                        }
+                                        callback();
+                                    });
+                                });
+                            } else if (r.length > 1) {
+                                callback();
+                            } else if (r.length == 1) {
+                                destModels.link.destroy({where: {"\"issueId\"": r[0].id}}).then(function (e) {
+                                    destModels.issue.upsert({
+                                        title: item.title,
+                                        description: item.description,
+                                        solveDate: item.solveDate,
+                                        sourceId: item.id,
+                                        id: r[0].id
+                                    }).then(function (e) {
+                                        async.each(item.links, function (linkItem, localCallback) {
+                                            destModels.link.create({
+                                                link: linkItem,
+                                                issueId: r[0].id
+                                            }).then(function (e) {
+                                                localCallback();
+                                            }).catch(function (e) {
+                                                localCallback(e);
+                                            });
+                                        }, function (error) {
+                                            if (error)
+                                                callback(error);
+                                            callback();
+                                        });
+                                    });
+                                });
+                            }
+                        });
+                    }, function (error) {
+                        if (error) {
+                            winston.log('error', 'Synchronization failed: ' + os.EOL + error);
+                        }else{
+                            winston.log('info', 'Synchronization successfully finished');
+                        }
+
+                        mongoose.connection.close();
+                        running = false;
+                    });
                 });
-            }, function(error){
-                if(error){
-                    winston.log('error', 'Migration failed: '+os.EOL+error);
+            }).catch(function (error) {
+                if (error) {
+                    winston.log('error', 'Synchronization failed: ' + os.EOL + error);
                 }
                 mongoose.connection.close();
                 running = false;
             });
-        });
-    }).catch(function(error){
-        if(error){
-            winston.log('error', 'Migration failed: '+os.EOL+error);
         }
-        mongoose.connection.close();
-        running = false;
     });
 };

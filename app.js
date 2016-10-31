@@ -12,6 +12,4 @@ var fileName = path.join(config.logsDir, 'linker-sync.log');
 winston.add(winston.transports.File, {filename: fileName});
 winston.remove(winston.transports.Console);
 
-process.setMaxListeners(0);
-
 migrator.run();
