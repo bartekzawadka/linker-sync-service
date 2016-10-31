@@ -61,10 +61,13 @@ var markDeletedItems = function (callback) {
             "inactive": false
         }
     }).then(function (result) {
+        var itemsMarkedCount = 0;
         async.each(result, function (item, localCallback) {
             sourceIssue.findById(item.sourceId, function (err, issue) {
-                if (err)
+                if (err) {
                     localCallback(err);
+                    return;
+                }
 
                 if (!issue) {
                     destModels.issue.update({
@@ -74,6 +77,7 @@ var markDeletedItems = function (callback) {
                                 "sourceId": item.sourceId
                             }
                         }).then(function () {
+                        itemsMarkedCount++;
                         localCallback();
                     }).catch(function (e) {
                         localCallback(e);
@@ -83,6 +87,7 @@ var markDeletedItems = function (callback) {
                 }
             });
         }, function (error) {
+            winston.log('info', 'Number of items marked as removed: '+itemsMarkedCount);
             callback(error);
         });
     }).catch(function(e){
@@ -94,7 +99,7 @@ var sync = function () {
 
     markDeletedItems(function(er){
         if(er){
-            if (error) {
+            if (er) {
                 winston.log('error', 'Marking removed items failed: ' + os.EOL + er);
             }
             mongoose.connection.close();
@@ -126,6 +131,9 @@ var sync = function () {
                         return;
                     }
 
+                    var itemsInsertedCount = 0;
+                    var itemsUpdatedCount = 0;
+
                     async.each(res, function (item, callback) {
                         destModels.issue.findAll({where: {"sourceId": item.id}}).then(function (r) {
                             if (!r || r.length == 0) {
@@ -148,7 +156,9 @@ var sync = function () {
                                         if (error) {
                                             console.log(error);
                                             callback(error);
+                                            return;
                                         }
+                                        itemsInsertedCount++;
                                         callback();
                                     });
                                 });
@@ -173,8 +183,10 @@ var sync = function () {
                                                 localCallback(e);
                                             });
                                         }, function (error) {
-                                            if (error)
+                                            if (error) {
                                                 callback(error);
+                                                return;
+                                            }
                                             callback();
                                         });
                                     });
@@ -187,7 +199,8 @@ var sync = function () {
                         }else{
                             winston.log('info', 'Synchronization successfully finished');
                         }
-
+                        winston.log('info', 'Number of items added: '+itemsInsertedCount);
+                        winston.log('info', 'Number of items updated: '+itemsUpdatedCount);
                         mongoose.connection.close();
                         running = false;
                     });
