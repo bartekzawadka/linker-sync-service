@@ -11,7 +11,9 @@ module.exports = function(sequelize, DataTypes){
         DataTypes.STRING, allowNull: true},
         //registrationDate: {type: DataTypes.DATE, allowNull: true},
         //modificationDate: {type: DataTypes.DATE, allowNull: true},
-        solveDate: {type: DataTypes.DATE, allowNull: true}
+        solveDate: {type: DataTypes.DATE, allowNull: true},
+        sourceId: {type: DataTypes.STRING, allowNull: false},
+        inactive: {type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false}
     }, {
         classMethods: {
             associate: function (models) {
