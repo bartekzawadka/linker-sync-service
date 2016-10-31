@@ -1,0 +1,46 @@
+#! /bin/bash
+#
+# Author: Bartosz Zawadka, 2016
+#
+# Contact: kontakt@bartoszzawadka.pl
+#
+# /etc/init.d/linker-sync-service
+#
+### BEGIN INIT INFO
+# Provides: linker-sync-service
+# Required-Start: $remote_fs $syslog $network
+# Required-Stop: $remote_fs $syslog $network
+# Default-Start: 2 3 4 5
+# Default-Stop: 0 1 6
+# Short-Description: Linker app synchronization service
+# Descirption: Linker app synchronization service
+### END INIT INFO
+
+PIDFILE=/var/run/linker-service.pid
+USER=root
+CHUID=root
+STARTAS=/usr/bin/nodejs
+ARGS=/srv/linker-service/app.js
+RTIME=10
+
+case "$1" in
+	start)
+		echo "Starting Linker synchronization service"
+		sudo start-stop-daemon --start --pidfile $PIDFILE --make-pidfile --user $USER --chuid $CHUID --background --startas $STARTAS -- $ARGS
+		;;
+	stop)
+		echo "Stopping Linker synchronization service"
+		sudo start-stop-daemon --stop --pidfile $PIDFILE --retry $RTIME
+		;;
+	restart)
+		echo "Restarting Linker synchronization service"
+		$0 stop
+		$0 start
+		;;
+	*)
+		echo "Invalid command. Usage: /etc/init.d/linker-service {start|stop|restart}"
+		exit 1
+		;;
+esac
+exit 0
+
