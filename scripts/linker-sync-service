@@ -16,11 +16,11 @@
 # Descirption: Linker app synchronization service
 ### END INIT INFO
 
-PIDFILE=/var/run/linker-service.pid
+PIDFILE=/var/run/linker-sync-service.pid
 USER=root
 CHUID=root
 STARTAS=/usr/bin/nodejs
-ARGS=/srv/linker-service/app.js
+ARGS=/srv/linker-sync-service/app.js
 RTIME=10
 
 case "$1" in
@@ -38,7 +38,7 @@ case "$1" in
 		$0 start
 		;;
 	*)
-		echo "Invalid command. Usage: /etc/init.d/linker-service {start|stop|restart}"
+		echo "Invalid command. Usage: /etc/init.d/linker-sync-service {start|stop|restart}"
 		exit 1
 		;;
 esac
