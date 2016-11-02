@@ -95,123 +95,142 @@ var markDeletedItems = function (callback) {
     });
 };
 
+var addAndUpdateItems = function(operationFinishedCallback){
+    winston.log('info', 'Marking removed items completed');
+    winston.log('info', 'Data synchronization started');
+
+    destModels.issue.findAll({
+        order: "\"updatedAt\" DESC",
+        attributes: ['updatedAt'],
+        limit: 1
+    }).then(function (result) {
+        var where = null;
+
+        if (result && result[0] && result[0].dataValues && result[0].dataValues.updatedAt) {
+            var date = new Date(result[0].dataValues.updatedAt);
+            where = {
+                "updateAt": {
+                    $gt: date
+                }
+            };
+        }
+        sourceIssue.find().where(where).sort({"updateAt": 1}).exec(function (error, res) {
+            if (error) {
+                operationFinishedCallback('Error occured requesting data to synchronize: ' + os.EOL + error);
+                return;
+            }
+
+            var itemsInsertedCount = 0;
+            var itemsUpdatedCount = 0;
+
+            async.each(res, function (item, callback) {
+                destModels.issue.findAll({where: {"sourceId": item.id}}).then(function (r) {
+                    if (!r || r.length == 0) {
+                        destModels.issue.create({
+                            title: item.title,
+                            description: item.description,
+                            solveDate: item.solveDate,
+                            sourceId: item.id
+                        }).then(function (record) {
+
+                            itemsInsertedCount++;
+
+                            async.each(item.links, function (linkItem, localCallback) {
+                                destModels.link.create({
+                                    link: linkItem,
+                                    issueId: record.id
+                                }).then(function (e) {
+                                    localCallback();
+                                }).catch(function (e) {
+                                    localCallback(e);
+                                })
+                            }, function (error) {
+                                if (error) {
+                                    console.log(error);
+                                    callback(error);
+                                    return;
+                                }
+
+                                callback();
+                            });
+                        });
+                    } else if (r.length > 1) {
+                        callback();
+                    } else if (r.length == 1) {
+                        destModels.link.destroy({where: {"\"issueId\"": r[0].id}}).then(function (e) {
+                            destModels.issue.upsert({
+                                title: item.title,
+                                description: item.description,
+                                solveDate: item.solveDate,
+                                sourceId: item.id,
+                                id: r[0].id
+                            }).then(function (e) {
+                                async.each(item.links, function (linkItem, localCallback) {
+                                    destModels.link.create({
+                                        link: linkItem,
+                                        issueId: r[0].id
+                                    }).then(function (e) {
+                                        localCallback();
+                                    }).catch(function (e) {
+                                        localCallback(e);
+                                    });
+                                }, function (error) {
+                                    if (error) {
+                                        callback(error);
+                                        return;
+                                    }
+
+                                    itemsUpdatedCount++;
+                                    callback();
+                                });
+                            });
+                        });
+                    }
+                });
+            }, function (error) {
+                if (error) {
+                    operationFinishedCallback('Synchronization failed: ' + os.EOL + error);
+                    return;
+                }
+
+                winston.log('info', 'All items added and updated successfully');
+                winston.log('info', 'Number of items added: '+itemsInsertedCount);
+                winston.log('info', 'Number of items updated: '+itemsUpdatedCount);
+                operationFinishedCallback();
+            });
+        });
+    }).catch(function (error) {
+        operationFinishedCallback('Synchronization failed: ' + os.EOL + error);
+    });
+};
+
 var sync = function () {
 
-    markDeletedItems(function(er){
-        if(er){
-            if (er) {
+    var close = function(){
+        try{
+            mongoose.connection.close();
+        }finally {
+         running = false;
+        }
+    };
+
+    addAndUpdateItems(function(error){
+        if(error){
+            winston.log('error', error);
+            close();
+            // mongoose.connection.close();
+            // running = false;
+            return;
+        }
+
+        markDeletedItems(function(er){
+            if(er){
                 winston.log('error', 'Marking removed items failed: ' + os.EOL + er);
             }
-            mongoose.connection.close();
-            running = false;
-        }else{
-            winston.log('info', 'Marking removed items completed');
-            winston.log('info', 'Data synchronization started');
 
-            destModels.issue.findAll({
-                order: "\"updatedAt\" DESC",
-                attributes: ['updatedAt'],
-                limit: 1
-            }).then(function (result) {
-                var where = null;
+            winston.log('info', 'Synchronization successfully completed');
+            close();
+        })
 
-                if (result && result[0] && result[0].dataValues && result[0].dataValues.updatedAt) {
-                    var date = new Date(result[0].dataValues.updatedAt);
-                    where = {
-                        "updateAt": {
-                            $gt: date
-                        }
-                    };
-                }
-                sourceIssue.find().where(where).sort({"updateAt": 1}).exec(function (error, res) {
-                    if (error) {
-                        winston.log('error', 'Error occured requesting data to synchronize: ' + os.EOL + error);
-                        mongoose.connection.close();
-                        running = false;
-                        return;
-                    }
-
-                    var itemsInsertedCount = 0;
-                    var itemsUpdatedCount = 0;
-
-                    async.each(res, function (item, callback) {
-                        destModels.issue.findAll({where: {"sourceId": item.id}}).then(function (r) {
-                            if (!r || r.length == 0) {
-                                destModels.issue.create({
-                                    title: item.title,
-                                    description: item.description,
-                                    solveDate: item.solveDate,
-                                    sourceId: item.id
-                                }).then(function (record) {
-                                    async.each(item.links, function (linkItem, localCallback) {
-                                        destModels.link.create({
-                                            link: linkItem,
-                                            issueId: record.id
-                                        }).then(function (e) {
-                                            localCallback();
-                                        }).catch(function (e) {
-                                            localCallback(e);
-                                        })
-                                    }, function (error) {
-                                        if (error) {
-                                            console.log(error);
-                                            callback(error);
-                                            return;
-                                        }
-                                        itemsInsertedCount++;
-                                        callback();
-                                    });
-                                });
-                            } else if (r.length > 1) {
-                                callback();
-                            } else if (r.length == 1) {
-                                destModels.link.destroy({where: {"\"issueId\"": r[0].id}}).then(function (e) {
-                                    destModels.issue.upsert({
-                                        title: item.title,
-                                        description: item.description,
-                                        solveDate: item.solveDate,
-                                        sourceId: item.id,
-                                        id: r[0].id
-                                    }).then(function (e) {
-                                        async.each(item.links, function (linkItem, localCallback) {
-                                            destModels.link.create({
-                                                link: linkItem,
-                                                issueId: r[0].id
-                                            }).then(function (e) {
-                                                localCallback();
-                                            }).catch(function (e) {
-                                                localCallback(e);
-                                            });
-                                        }, function (error) {
-                                            if (error) {
-                                                callback(error);
-                                                return;
-                                            }
-                                            callback();
-                                        });
-                                    });
-                                });
-                            }
-                        });
-                    }, function (error) {
-                        if (error) {
-                            winston.log('error', 'Synchronization failed: ' + os.EOL + error);
-                        }else{
-                            winston.log('info', 'Synchronization successfully finished');
-                        }
-                        winston.log('info', 'Number of items added: '+itemsInsertedCount);
-                        winston.log('info', 'Number of items updated: '+itemsUpdatedCount);
-                        mongoose.connection.close();
-                        running = false;
-                    });
-                });
-            }).catch(function (error) {
-                if (error) {
-                    winston.log('error', 'Synchronization failed: ' + os.EOL + error);
-                }
-                mongoose.connection.close();
-                running = false;
-            });
-        }
     });
 };
