@@ -218,8 +218,6 @@ var sync = function () {
         if(error){
             winston.log('error', error);
             close();
-            // mongoose.connection.close();
-            // running = false;
             return;
         }
 
