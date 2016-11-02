@@ -3,6 +3,7 @@
  */
 var destModels = require('../models/dest');
 var sourceIssue = require('../models/source/issue');
+var logsModels = require('../models/logs');
 var mongoose = require('mongoose');
 var config = require('../config');
 var cron = require('node-cron');

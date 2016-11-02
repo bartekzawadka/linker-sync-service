@@ -13,6 +13,13 @@
     "host": "host",
     "collection": "Issues"
   },
+  "logs":{
+    "username": "linker_sync_logs_user",
+    "password": "pol34*^",
+    "database": "linker_sync_logs",
+    "host": "192.168.1.113",
+    "dialect": "postgres"
+  },
   "cron": "*/10 * * * * *",
   "logsDir": "D:\\linker_logs"
 }
