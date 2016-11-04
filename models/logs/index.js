@@ -7,7 +7,7 @@ var config = require('../../config');
 var path = require('path');
 var basename  = path.basename(module.filename);
 
-var db = {};
+var ldb = {};
 
 var sequelize = new Sequelize(config.logs.database, config.logs.username, config.logs.password, {
     host: config.logs.host,
@@ -21,16 +21,16 @@ fs
     })
     .forEach(function(file) {
         var model = sequelize['import'](path.join(__dirname, file));
-        db[model.name] = model;
+        ldb[model.name] = model;
     });
 
-Object.keys(db).forEach(function(modelName) {
-    if (db[modelName].associate) {
-        db[modelName].associate(db);
+Object.keys(ldb).forEach(function(modelName) {
+    if (ldb[modelName].associate) {
+        ldb[modelName].associate(ldb);
     }
 });
 
-db.sequelize = sequelize;
-db.Sequelize = Sequelize;
+ldb.sequelize = sequelize;
+ldb.Sequelize = Sequelize;
 
-module.exports = db;
+module.exports = ldb;

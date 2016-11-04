@@ -4,11 +4,10 @@
 module.exports = function(sequelize, DataTypes){
     var log = sequelize.define("log", {
         id: {type: DataTypes.INTEGER, allowNull: false, primaryKey: true, autoIncrement: true},
-        sessionId: {type: DataTypes.INTEGER, allowNull: false},
         level: {type: DataTypes.STRING, allowNull: false},
         type: {type: DataTypes.STRING, allowNull: false},
-        message: {type: DataTypes.STRING, allowNull: false},
-        description: {type: DataTypes.STRING, allowNull: true}
+        message: {type: DataTypes.STRING(1000), allowNull: false},
+        description: {type: DataTypes.STRING(5000), allowNull: true}
     });
 
     return log;

@@ -10,51 +10,116 @@ var cron = require('node-cron');
 var winston = require('winston');
 var os = require('os');
 var async = require('async');
+var consts = require('./consts');
 
 var running = false;
+var currentLogSession = null;
 
 mongoose.connection.on('error', function (err) {
+
     winston.log('error', 'MongoDB Connection Error. Please make sure that MongoDB is running.');
     winston.log('error', err);
     running = false;
 });
 mongoose.connection.on('open', function () {
-    winston.log('info', 'Connected to mongo server.');
-    winston.log('info', 'Starting synchronization');
-
     sync();
 });
 
 module.exports.run = function () {
-    cron.schedule(config.cron, migrationTask, true);
+    logsModels.sequelize.sync().then(function(){
+        cron.schedule(config.cron, migrationTask, true);
+    }).catch(function(e){
+        winston.log('error', 'Unable to sync logs database schema:'+os.EOL+e);
+    });
+};
+
+var insertLog = function(level, type, message, description, callback){
+
+    var insertLogWithSession = function(logSession, level, type, message, description){
+        if(!level){
+            winston.log('error', 'Could not add log record: Log level was not provided');
+            return;
+        }
+        if(!type){
+            winston.log('error', 'Could not add log record: Log type was not provided');
+            return;
+        }
+        if(!message){
+            winston.log('error', 'Could not add log record: Log message was not provided');
+            return;
+        }
+
+        var insertRecord = {
+            sessionId: currentLogSession,
+            level: level,
+            type: type,
+            message: message
+        };
+        if(description){
+            insertRecord.description = description;
+        }
+
+        logsModels.log.create(insertRecord).then(function(){
+            if(callback)
+                callback();
+        }).catch(function(e){
+            var msg = 'Error occurred adding log record:'+os.EOL+e;
+            if(description){
+                msg += os.EOL+'Message to be written: '+description;
+            }
+            winston.log('error', msg);
+            if(callback)
+                callback(e);
+        })
+    };
+
+    if(!currentLogSession){
+        logsModels.session.create({
+            startedAt: new Date()
+        }).then(function(session){
+            currentLogSession = session.id;
+            insertLogWithSession(currentLogSession, level, type, message, description);
+        });
+    }else{
+        insertLogWithSession(currentLogSession, level, type, message, description);
+    }
+
 };
 
 var migrationTask = function () {
 
     if (running) {
-        winston.log('info', 'Synchronization job invoked, but another task is running. Waiting for next CRON opportunity');
         return;
     }
 
     running = true;
-    winston.log('info', 'Synchronization job started');
+    logsModels.session.create({
+        startedAt: new Date()
+    }).then(function(session){
+        currentLogSession = session.id;
 
-    destModels.sequelize.sync().then(function () {
-        winston.log('info', 'Destination database synced successfully');
+        insertLog(consts.LEVEL_INFO, consts.TYPE_START, 'Synchronization job started');
 
-        if (mongoose.connection.readyState == 0) {
+        destModels.sequelize.sync().then(function () {
+            insertLog(consts.LEVEL_INFO, consts.TYPE_DB_CONNECTION, 'Destination database synced successfully');
 
-            mongoose.connect('mongodb://' +
-                config.source.username + ':'
-                + config.source.password + '@'
-                + config.source.host + '/'
-                + config.source.database);
-        }
+            if (mongoose.connection.readyState == 0) {
+
+                mongoose.connect('mongodb://' +
+                    config.source.username + ':'
+                    + config.source.password + '@'
+                    + config.source.host + '/'
+                    + config.source.database);
+            }
+        }).catch(function(e){
+            insertLog(consts.LEVEL_ERROR, consts.TYPE_DB_CONNECTION, 'Destination database sync/connection failed', e);
+            close();
+        });
     });
 };
 
 var markDeletedItems = function (callback) {
-    winston.log('info', 'Marking removed items started');
+    insertLog(consts.LEVEL_INFO, consts.TYPE_MARK_REMOVE_START, 'Marking removed items started');
 
     destModels.issue.findAll({
         attributes: ['sourceId'],
@@ -66,6 +131,7 @@ var markDeletedItems = function (callback) {
         async.each(result, function (item, localCallback) {
             sourceIssue.findById(item.sourceId, function (err, issue) {
                 if (err) {
+                    insertLog(consts.LEVEL_ERROR, consts.TYPE_MARK_REMOVED, 'Unable to find specified issue to mark as removed - \''+item.title+'\'', err);
                     localCallback(err);
                     return;
                 }
@@ -81,6 +147,7 @@ var markDeletedItems = function (callback) {
                         itemsMarkedCount++;
                         localCallback();
                     }).catch(function (e) {
+                        insertLog(consts.LEVEL_ERROR, consts.TYPE_MARK_REMOVED, 'Marking removed item as removed failed - \''+item.title+'\'', e);
                         localCallback(e);
                     });
                 }else{
@@ -88,17 +155,22 @@ var markDeletedItems = function (callback) {
                 }
             });
         }, function (error) {
-            winston.log('info', 'Number of items marked as removed: '+itemsMarkedCount);
-            callback(error);
+            if(error){
+                insertLog(consts.LEVEL_ERROR, consts.TYPE_MARK_REMOVED, 'Marking issues as removed failed', error);
+                callback(true);
+                return;
+            }
+            insertLog(consts.LEVEL_INFO, consts.TYPE_MARK_REMOVED, 'Marking as removed successfully completed');
+            insertLog(consts.LEVEL_INFO, consts.TYPE_DELETE_NOTIFICATION, 'Number of items marked as removed: '+itemsMarkedCount, itemsMarkedCount);
+            callback();
         });
     }).catch(function(e){
-        callback(e);
+        insertLog(consts.LEVEL_ERROR, consts.TYPE_MARK_REMOVED, 'Marking issues as removed failed', e);
+        callback(true);
     });
 };
 
 var addAndUpdateItems = function(operationFinishedCallback){
-    winston.log('info', 'Marking removed items completed');
-    winston.log('info', 'Data synchronization started');
 
     destModels.issue.findAll({
         order: "\"updatedAt\" DESC",
@@ -117,7 +189,8 @@ var addAndUpdateItems = function(operationFinishedCallback){
         }
         sourceIssue.find().where(where).sort({"updateAt": 1}).exec(function (error, res) {
             if (error) {
-                operationFinishedCallback('Error occured requesting data to synchronize: ' + os.EOL + error);
+                insertLog(consts.LEVEL_ERROR, consts.TYPE_SYNC_DATA_FETCH,'Error occured requesting data to synchronize', error );
+                operationFinishedCallback(true);
                 return;
             }
 
@@ -147,13 +220,18 @@ var addAndUpdateItems = function(operationFinishedCallback){
                                 })
                             }, function (error) {
                                 if (error) {
-                                    console.log(error);
+                                    insertLog(consts.LEVEL_ERROR, consts.TYPE_LINK, 'Links adding failed for issue: '+record.title, error);
                                     callback(error);
                                     return;
                                 }
 
                                 callback();
                             });
+                        }).catch(function(errr){
+                            if(errr){
+                                insertLog(consts.LEVEL_ERROR, consts.TYPE_ISSUE, 'Issue adding failed - issue: \''+item.title+'\'', errr);
+                                callback(errr);
+                            }
                         });
                     } else if (r.length > 1) {
                         callback();
@@ -165,7 +243,7 @@ var addAndUpdateItems = function(operationFinishedCallback){
                                 solveDate: item.solveDate,
                                 sourceId: item.id,
                                 id: r[0].id
-                            }).then(function (e) {
+                            }).then(function () {
                                 async.each(item.links, function (linkItem, localCallback) {
                                     destModels.link.create({
                                         link: linkItem,
@@ -177,6 +255,7 @@ var addAndUpdateItems = function(operationFinishedCallback){
                                     });
                                 }, function (error) {
                                     if (error) {
+                                        insertLog(consts.LEVEL_ERROR, consts.TYPE_LINK, 'Links update failed for issue: \''+item.title+'\'', error);
                                         callback(error);
                                         return;
                                     }
@@ -184,51 +263,75 @@ var addAndUpdateItems = function(operationFinishedCallback){
                                     itemsUpdatedCount++;
                                     callback();
                                 });
+                            }).catch(function(e){
+                                if(e){
+                                    insertLog(consts.LEVEL_ERROR, consts.TYPE_ISSUE, 'Issue update failed - issue: \''+item.title+'\'', e);
+                                    callback(e);
+                                }
                             });
                         });
                     }
                 });
             }, function (error) {
                 if (error) {
-                    operationFinishedCallback('Synchronization failed: ' + os.EOL + error);
+                    insertLog(consts.LEVEL_ERROR, consts.TYPE_INSERT_UPDATE, 'New/modified objects synchronization failed', error);
+                    operationFinishedCallback(true);
                     return;
                 }
 
-                winston.log('info', 'All items added and updated successfully');
-                winston.log('info', 'Number of items added: '+itemsInsertedCount);
-                winston.log('info', 'Number of items updated: '+itemsUpdatedCount);
+                insertLog(consts.LEVEL_INFO, consts.TYPE_INSERT_UPDATE, 'All items added and updated successfully');
+                insertLog(consts.LEVEL_INFO, consts.TYPE_INSERT_NOTIFICATION, 'Number of items added: '+itemsInsertedCount, itemsInsertedCount);
+                insertLog(consts.LEVEL_INFO, consts.TYPE_UPDATE_NOTIFICATION, 'Number of items updated: '+itemsUpdatedCount, itemsUpdatedCount);
                 operationFinishedCallback();
             });
         });
     }).catch(function (error) {
-        operationFinishedCallback('Synchronization failed: ' + os.EOL + error);
+        insertLog(consts.LEVEL_ERROR, consts.TYPE_INSERT_UPDATE, 'New/modified objects synchronization failed', error);
+        operationFinishedCallback(true);
     });
+};
+
+var close = function(success){
+    try{
+        mongoose.connection.close();
+        var level = consts.LEVEL_ERROR;
+        var message = 'Synchronization failed';
+        if(success && success == true) {
+            level = consts.LEVEL_INFO;
+            message = 'Synchronization successfully completed';
+        }
+
+        insertLog(level, consts.TYPE_END, message, null, function(er){
+            if(er){
+                return;
+            }
+            logsModels.session.upsert({
+                endedAt: new Date(),
+                id: currentLogSession
+            }).then(function(){running = false;}).catch(function(e){
+                running = false;
+                winston.log('error', 'Closing logging session failed: '+os.EOL+e);
+            });
+        });
+    }catch(e) {
+        running = false
+    }
 };
 
 var sync = function () {
 
-    var close = function(){
-        try{
-            mongoose.connection.close();
-        }finally {
-         running = false;
-        }
-    };
-
     addAndUpdateItems(function(error){
-        if(error){
-            winston.log('error', error);
+        if(error && error == true){
             close();
             return;
         }
 
         markDeletedItems(function(er){
-            if(er){
-                winston.log('error', 'Marking removed items failed: ' + os.EOL + er);
+            if(er && er == true){
+                close();
+            }else{
+                close(true);
             }
-
-            winston.log('info', 'Synchronization successfully completed');
-            close();
         })
 
     });
