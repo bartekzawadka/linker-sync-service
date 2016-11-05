@@ -53,11 +53,9 @@ var insertLog = function(level, type, message, description, callback){
             sessionId: currentLogSession,
             level: level,
             type: type,
-            message: message
+            message: message,
+            description: description
         };
-        if(description){
-            insertRecord.description = description;
-        }
 
         logsModels.log.create(insertRecord).then(function(){
             if(callback)
@@ -98,7 +96,7 @@ var migrationTask = function () {
     }).then(function(session){
         currentLogSession = session.id;
 
-        insertLog(consts.LEVEL_INFO, consts.TYPE_START, 'Synchronization job started');
+        insertLog(consts.LEVEL_INFO, consts.TYPE_SYNC_START, 'Synchronization job started');
 
         destModels.sequelize.sync().then(function () {
             insertLog(consts.LEVEL_INFO, consts.TYPE_DB_CONNECTION, 'Destination database synced successfully');
@@ -301,17 +299,34 @@ var close = function(success){
             message = 'Synchronization successfully completed';
         }
 
-        insertLog(level, consts.TYPE_END, message, null, function(er){
+        insertLog(level, consts.TYPE_SYNC_END, message, null, function(er){
             if(er){
                 return;
             }
-            logsModels.session.upsert({
-                endedAt: new Date(),
-                id: currentLogSession
-            }).then(function(){running = false;}).catch(function(e){
+
+            logsModels.session.findById(currentLogSession).then(function(result){
+                if(result){
+                    result.updateAttributes({
+                        endedAt: new Date()
+                    }).then(function(r){
+                        running = false;
+                    }).catch(function(e){
+                        winston.log('error', 'Closing logging session {'+currentLogSession+'} failed: '+os.EOL+e);
+                        running = false;
+                    });
+                }
+            }).catch(function(e){
+                winston.log('error', 'Closing logging session {'+currentLogSession+'} failed - unable to find current session: '+os.EOL+e);
                 running = false;
-                winston.log('error', 'Closing logging session failed: '+os.EOL+e);
             });
+
+            // logsModels.session.upsert({
+            //     endedAt: new Date(),
+            //     id: currentLogSession
+            // }).then(function(){running = false;}).catch(function(e){
+            //     running = false;
+            //     winston.log('error', 'Closing logging session failed: '+os.EOL+e);
+            // });
         });
     }catch(e) {
         running = false
