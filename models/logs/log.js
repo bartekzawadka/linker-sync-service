@@ -7,7 +7,8 @@ module.exports = function(sequelize, DataTypes){
         level: {type: DataTypes.STRING, allowNull: false},
         type: {type: DataTypes.STRING, allowNull: false},
         message: {type: DataTypes.STRING(1000), allowNull: false},
-        description: {type: DataTypes.STRING(5000), allowNull: true}
+        description: {type: DataTypes.STRING(5000), allowNull: true},
+        value: {type: DataTypes.INTEGER, allowNull: true, defaultValue: 0}
     });
 
     return log;

@@ -14,6 +14,8 @@ var consts = require('./consts');
 
 var running = false;
 var currentLogSession = null;
+var sessionLevel = 0;
+var totalItemsProcessed = 0;
 
 mongoose.connection.on('error', function (err) {
 
@@ -33,7 +35,33 @@ module.exports.run = function () {
     });
 };
 
-var insertLog = function(level, type, message, description, callback){
+var getValueForLevel = function(value){
+    if(value == "INFO")
+        return 0;
+    if(value == "DEBUG")
+        return 1;
+    if(value == "WARNING")
+        return 2;
+    if(value == "ERROR")
+        return 3;
+    if(value == "FATAL")
+        return 4;
+
+    return 0;
+};
+var getLevelForValue = function(level){
+    if(level == 1)
+        return "DEBUG";
+    if(level == 2)
+        return "WARNING";
+    if(level == 3)
+        return "ERROR";
+    if(level == 4)
+        return "FATAL";
+    return "INFO";
+};
+
+var insertLog = function(level, type, message, description, value, callback){
 
     var insertLogWithSession = function(logSession, level, type, message, description){
         if(!level){
@@ -54,10 +82,18 @@ var insertLog = function(level, type, message, description, callback){
             level: level,
             type: type,
             message: message,
-            description: description
+            description: description,
+            value: value
         };
 
         logsModels.log.create(insertRecord).then(function(){
+            var currentLevelValue = getValueForLevel(level);
+            if(currentLevelValue > sessionLevel)
+                sessionLevel = currentLevelValue;
+
+            if(value)
+                totalItemsProcessed += value;
+
             if(callback)
                 callback();
         }).catch(function(e){
@@ -91,6 +127,10 @@ var migrationTask = function () {
     }
 
     running = true;
+
+    totalItemsProcessed = 0;
+    sessionLevel = 0;
+
     logsModels.session.create({
         startedAt: new Date()
     }).then(function(session){
@@ -110,7 +150,7 @@ var migrationTask = function () {
                     + config.source.database);
             }
         }).catch(function(e){
-            insertLog(consts.LEVEL_ERROR, consts.TYPE_DB_CONNECTION, 'Destination database sync/connection failed', e);
+            insertLog(consts.LEVEL_FATAL, consts.TYPE_DB_CONNECTION, 'Destination database sync/connection failed', e);
             close();
         });
     });
@@ -159,7 +199,7 @@ var markDeletedItems = function (callback) {
                 return;
             }
             insertLog(consts.LEVEL_INFO, consts.TYPE_MARK_REMOVED, 'Marking as removed successfully completed');
-            insertLog(consts.LEVEL_INFO, consts.TYPE_DELETE_NOTIFICATION, 'Number of items marked as removed: '+itemsMarkedCount, itemsMarkedCount);
+            insertLog(consts.LEVEL_INFO, consts.TYPE_DELETE_NOTIFICATION, 'Number of items marked as removed: '+itemsMarkedCount, null, itemsMarkedCount);
             callback();
         });
     }).catch(function(e){
@@ -187,7 +227,7 @@ var addAndUpdateItems = function(operationFinishedCallback){
         }
         sourceIssue.find().where(where).sort({"updateAt": 1}).exec(function (error, res) {
             if (error) {
-                insertLog(consts.LEVEL_ERROR, consts.TYPE_SYNC_DATA_FETCH,'Error occured requesting data to synchronize', error );
+                insertLog(consts.LEVEL_FATAL, consts.TYPE_SYNC_DATA_FETCH,'Error occured requesting data to synchronize', error );
                 operationFinishedCallback(true);
                 return;
             }
@@ -278,8 +318,8 @@ var addAndUpdateItems = function(operationFinishedCallback){
                 }
 
                 insertLog(consts.LEVEL_INFO, consts.TYPE_INSERT_UPDATE, 'All items added and updated successfully');
-                insertLog(consts.LEVEL_INFO, consts.TYPE_INSERT_NOTIFICATION, 'Number of items added: '+itemsInsertedCount, itemsInsertedCount);
-                insertLog(consts.LEVEL_INFO, consts.TYPE_UPDATE_NOTIFICATION, 'Number of items updated: '+itemsUpdatedCount, itemsUpdatedCount);
+                insertLog(consts.LEVEL_INFO, consts.TYPE_INSERT_NOTIFICATION, 'Number of items added: '+itemsInsertedCount, null, itemsInsertedCount);
+                insertLog(consts.LEVEL_INFO, consts.TYPE_UPDATE_NOTIFICATION, 'Number of items updated: '+itemsUpdatedCount, null, itemsUpdatedCount);
                 operationFinishedCallback();
             });
         });
@@ -292,14 +332,16 @@ var addAndUpdateItems = function(operationFinishedCallback){
 var close = function(success){
     try{
         mongoose.connection.close();
-        var level = consts.LEVEL_ERROR;
+        //var level = consts.LEVEL_ERROR;
         var message = 'Synchronization failed';
         if(success && success == true) {
-            level = consts.LEVEL_INFO;
+            //level = consts.LEVEL_INFO;
             message = 'Synchronization successfully completed';
         }
 
-        insertLog(level, consts.TYPE_SYNC_END, message, null, function(er){
+        var level = getLevelForValue(sessionLevel);
+
+        insertLog(level, consts.TYPE_SYNC_END, message, null, null, function(er){
             if(er){
                 return;
             }
@@ -307,7 +349,9 @@ var close = function(success){
             logsModels.session.findById(currentLogSession).then(function(result){
                 if(result){
                     result.updateAttributes({
-                        endedAt: new Date()
+                        endedAt: new Date(),
+                        level: level,
+                        processedItemsCount: totalItemsProcessed
                     }).then(function(r){
                         running = false;
                     }).catch(function(e){
@@ -319,14 +363,6 @@ var close = function(success){
                 winston.log('error', 'Closing logging session {'+currentLogSession+'} failed - unable to find current session: '+os.EOL+e);
                 running = false;
             });
-
-            // logsModels.session.upsert({
-            //     endedAt: new Date(),
-            //     id: currentLogSession
-            // }).then(function(){running = false;}).catch(function(e){
-            //     running = false;
-            //     winston.log('error', 'Closing logging session failed: '+os.EOL+e);
-            // });
         });
     }catch(e) {
         running = false
